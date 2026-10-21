@@ -18,6 +18,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 
+import enrich
+
 ROOT = Path(__file__).resolve().parent
 PUBLIC = ROOT / "public"
 DATA = ROOT / "data"
@@ -49,6 +51,10 @@ CREATE TABLE IF NOT EXISTS albums (
     cover      TEXT DEFAULT '',
     is_read    INTEGER DEFAULT 0,
     owned      INTEGER DEFAULT 1,
+    authors    TEXT DEFAULT '',
+    publisher  TEXT DEFAULT '',
+    pages      INTEGER,
+    source_url TEXT DEFAULT '',
     notes      TEXT DEFAULT '',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -58,11 +64,13 @@ CREATE INDEX IF NOT EXISTS idx_albums_series ON albums(series_id);
 # Colonnes ajoutées après la première version : ajoutées aux bases existantes au démarrage.
 MIGRATIONS = {
     "series": {"total_tomes": "INTEGER", "track_missing": "INTEGER DEFAULT 1"},
-    "albums": {"owned": "INTEGER DEFAULT 1"},
+    "albums": {"owned": "INTEGER DEFAULT 1", "authors": "TEXT DEFAULT ''", "publisher": "TEXT DEFAULT ''",
+               "pages": "INTEGER", "source_url": "TEXT DEFAULT ''"},
 }
 
 SERIES_FIELDS = ("title", "author", "publisher", "genre", "status", "description")
-ALBUM_FIELDS = ("tome", "title", "year", "isbn", "cover", "is_read", "owned", "notes")
+ALBUM_FIELDS = ("tome", "title", "year", "isbn", "cover", "is_read", "owned", "notes",
+                "authors", "publisher", "pages")
 
 DEMO = [
     ("Les Aventures de Tintin", "Hergé", "Casterman", "Aventure", "terminée",
@@ -169,6 +177,9 @@ def clean_album(payload, previous_cover=""):
     data["year"] = to_int(data["year"])
     data["isbn"] = re.sub(r"[^0-9Xx]", "", str(data["isbn"] or ""))
     data["notes"] = str(data["notes"] or "").strip()
+    data["authors"] = str(data["authors"] or "").strip()
+    data["publisher"] = str(data["publisher"] or "").strip()
+    data["pages"] = to_int(data["pages"])
     data["is_read"] = 1 if data["is_read"] else 0
     data["owned"] = 0 if payload.get("owned") is False else 1
     cover = str(data["cover"] or "").strip()
@@ -294,8 +305,9 @@ def api_album_create(conn, _q, body, sid):
     get_series(conn, sid)
     d = clean_album(body)
     aid = conn.execute(
-        "INSERT INTO albums (series_id, tome, title, year, isbn, cover, is_read, owned, notes) "
-        "VALUES (:sid, :tome, :title, :year, :isbn, :cover, :is_read, :owned, :notes)", {**d, "sid": sid}
+        "INSERT INTO albums (series_id, tome, title, year, isbn, cover, is_read, owned, notes, "
+        "authors, publisher, pages) VALUES (:sid, :tome, :title, :year, :isbn, :cover, :is_read, "
+        ":owned, :notes, :authors, :publisher, :pages)", {**d, "sid": sid}
     ).lastrowid
     return get_album(conn, aid)
 
@@ -310,12 +322,41 @@ def api_series_add_missing(conn, _q, _b, sid):
     return {"added": len(series["missing_tomes"])}
 
 
+def api_series_enrich(conn, _q, _b, sid):
+    """Importe les couvertures manquantes et complète les champs vides de la série."""
+    get_series(conn, sid)
+    return enrich.enrich_series(conn, sid, COVERS)
+
+
+def api_lookup(_conn, query, _b):
+    """Recherche par ISBN pour le formulaire ; la couverture n'est téléchargée que si demandée."""
+    isbn = (query.get("isbn") or [""])[0]
+    if not re.sub(r"[^0-9Xx]", "", isbn):
+        raise ApiError(400, "ISBN manquant.")
+    info, image = enrich.lookup(isbn, want_cover=(query.get("cover") or ["0"])[0] == "1")
+    if not info and not image:
+        raise ApiError(404, "Aucune information trouvée pour cet ISBN.")
+    result = {k: info.get(k) for k in ("title", "authors", "publisher", "year", "pages", "source_url")}
+    result["cover"] = enrich.save_image(COVERS, image) if image else ""
+    return result
+
+
+def cleanup_covers():
+    """Supprime les images qui ne sont plus utilisées (ex. recherche ISBN annulée)."""
+    with db() as conn:
+        used = {Path(c).name for (c,) in conn.execute("SELECT cover FROM albums WHERE cover LIKE '/covers/%'")}
+    for f in COVERS.iterdir():
+        if f.is_file() and f.name not in used:
+            f.unlink()
+
+
 def api_album_update(conn, _q, body, aid):
     current = get_album(conn, aid)
     d = clean_album(body, previous_cover=current["cover"])
     conn.execute(
         "UPDATE albums SET tome=:tome, title=:title, year=:year, isbn=:isbn, cover=:cover, "
-        "is_read=:is_read, owned=:owned, notes=:notes WHERE id=:id", {**d, "id": aid}
+        "is_read=:is_read, owned=:owned, notes=:notes, authors=:authors, publisher=:publisher, "
+        "pages=:pages WHERE id=:id", {**d, "id": aid}
     )
     return get_album(conn, aid)
 
@@ -335,6 +376,8 @@ ROUTES = [
     ("DELETE", r"/api/series/(\d+)", api_series_delete),
     ("POST", r"/api/series/(\d+)/albums", api_album_create),
     ("POST", r"/api/series/(\d+)/missing", api_series_add_missing),
+    ("POST", r"/api/series/(\d+)/enrich", api_series_enrich),
+    ("GET", r"/api/lookup", api_lookup),
     ("PUT", r"/api/albums/(\d+)", api_album_update),
     ("DELETE", r"/api/albums/(\d+)", api_album_delete),
 ]
@@ -427,6 +470,7 @@ def main():
     parser.add_argument("--demo", action="store_true", help="ajoute des séries d'exemple si la base est vide")
     args = parser.parse_args()
     init_db(demo=args.demo)
+    cleanup_covers()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"📚 Collection BD disponible sur http://{args.host}:{args.port}  (Ctrl+C pour arrêter)")
     try:

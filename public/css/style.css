@@ -309,6 +309,8 @@ label.check input { width: 20px; height: 20px; accent-color: var(--olive); }
 .album-form-grid { display: grid; grid-template-columns: 150px 1fr; gap: 20px; }
 .cover-picker { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
 .cover-preview { width: 100%; }
+fieldset.album-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.btn.busy { opacity: .7; cursor: progress; }
 .file-btn { flex-direction: row; margin: 0; color: var(--ink); font-size: .85rem; }
 
 @media (max-width: 560px) {
@@ -329,6 +331,12 @@ label.check input { width: 20px; height: 20px; accent-color: var(--olive); }
 
 /* --- Vitrine en lecture seule ----------------------------------------- */
 .readonly [data-action], .readonly .edit-only { display: none !important; }
+.readonly-only { display: none; }
+.readonly .readonly-only { display: inline; }
+.readonly .album-fields input:disabled, .readonly .album-fields textarea:disabled {
+  background: transparent; border-color: transparent; padding-left: 0; color: var(--ink); -webkit-text-fill-color: var(--ink);
+}
+.readonly .album-fields input[type="checkbox"]:disabled { opacity: 1; }
 .readonly [data-album], .readonly [data-missing] { cursor: default; }
 
 /* --- Toast -------------------------------------------------------------- */

@@ -234,6 +234,8 @@ async function renderSeries(id) {
       </div>
       <div class="series-actions">
         <button class="btn btn-primary" data-action="new-album">+ Ajouter un album</button>
+        <button class="btn btn-ghost" data-action="enrich"
+                title="Importe les couvertures manquantes et complète les informations vides à partir des ISBN">Compléter depuis internet</button>
         <button class="btn btn-ghost" data-action="edit-series">Modifier</button>
         <button class="btn btn-danger-ghost" data-action="delete-series">Supprimer</button>
       </div>
@@ -358,12 +360,20 @@ function openAlbumForm(album = null, defaults = {}) {
   editingAlbum = album;
   pendingCoverData = null;
   albumForm.reset();
-  albumForm.querySelector(".modal-title").textContent = album ? "Modifier l'album" : "Nouvel album";
+  albumForm.querySelector(".modal-title").textContent = staticData ? "Fiche de l'album"
+    : album ? "Modifier l'album" : "Nouvel album";
+  albumForm.querySelector("fieldset").disabled = !!staticData;
+  const source = document.getElementById("album-source");
+  source.hidden = !album?.source_url;
+  source.href = album?.source_url || "#";
+  source.textContent = album?.source_url?.includes("bnf.fr") ? "Notice BnF ↗" : "Notice ↗";
   albumForm.querySelector(".form-error").hidden = true;
   document.getElementById("album-delete").hidden = !album;
   const f = albumForm.elements;
   if (album) {
-    for (const name of ["tome", "title", "year", "isbn", "cover", "notes"]) f[name].value = album[name] ?? "";
+    for (const name of ["tome", "title", "year", "isbn", "cover", "notes", "authors", "publisher", "pages"]) {
+      f[name].value = album[name] ?? "";
+    }
     f.is_read.checked = !!album.is_read;
     f.owned.checked = !!album.owned;
   } else if (defaults.tome) {
@@ -378,7 +388,7 @@ function openAlbumForm(album = null, defaults = {}) {
   }
   refreshPreview();
   albumDialog.showModal();
-  f.title.focus();
+  if (!staticData) f.title.focus();
 }
 
 ["input", "change"].forEach((evt) => albumForm.addEventListener(evt, (e) => {
@@ -418,17 +428,43 @@ coverFile.addEventListener("change", async () => {
   coverFile.value = "";
 });
 
-document.getElementById("cover-isbn").addEventListener("click", () => {
-  const isbn = albumForm.elements.isbn.value.replace(/[^0-9Xx]/g, "");
+// Recherche par ISBN : ne remplit que les champs vides, et ne télécharge la couverture
+// que s'il n'y en a pas déjà une en local.
+document.getElementById("cover-isbn").addEventListener("click", async (e) => {
+  const f = albumForm.elements;
+  const isbn = f.isbn.value.replace(/[^0-9Xx]/g, "");
   if (!isbn) {
     showFormError(albumForm, "Saisissez d'abord l'ISBN de l'album.");
-    albumForm.elements.isbn.focus();
+    f.isbn.focus();
     return;
   }
   albumForm.querySelector(".form-error").hidden = true;
-  pendingCoverData = null;
-  albumForm.elements.cover.value = `https://covers.openlibrary.org/b/isbn/${isbn}-L.jpg?default=false`;
-  refreshPreview();
+  const btn = e.currentTarget;
+  const hasLocalCover = !!pendingCoverData || f.cover.value.startsWith("/covers/");
+  btn.classList.add("busy");
+  btn.disabled = true;
+  btn.textContent = "Recherche…";
+  try {
+    const info = await api(`/lookup?isbn=${isbn}&cover=${hasLocalCover ? 0 : 1}`);
+    if (info.title && /^\s*(tome\s*\d+)?\s*$/i.test(f.title.value)) f.title.value = info.title;
+    for (const name of ["authors", "publisher", "year", "pages"]) {
+      if (info[name] && !f[name].value) f[name].value = info[name];
+    }
+    if (info.cover) {
+      pendingCoverData = null;
+      f.cover.value = info.cover;
+    }
+    if (info.source_url && editingAlbum) editingAlbum.source_url = info.source_url;
+    refreshPreview();
+    toast(info.cover ? "Couverture et informations récupérées" : hasLocalCover
+      ? "Informations complétées (couverture conservée)" : "Informations complétées, pas de couverture trouvée");
+  } catch (err) {
+    showFormError(albumForm, err.message);
+  } finally {
+    btn.classList.remove("busy");
+    btn.disabled = false;
+    btn.textContent = "Via l'ISBN";
+  }
 });
 
 document.getElementById("cover-clear").addEventListener("click", () => {
@@ -443,6 +479,7 @@ albumForm.addEventListener("submit", async (e) => {
   const body = {
     tome: f.tome.value, title: f.title.value, year: f.year.value, isbn: f.isbn.value,
     cover: f.cover.value.trim(), is_read: f.is_read.checked, owned: f.owned.checked, notes: f.notes.value,
+    authors: f.authors.value, publisher: f.publisher.value, pages: f.pages.value,
   };
   if (pendingCoverData) body.cover_data = pendingCoverData;
   try {
@@ -485,7 +522,7 @@ document.querySelectorAll("dialog").forEach((d) => d.addEventListener("click", (
 }));
 
 app.addEventListener("click", async (e) => {
-  if (staticData && e.target.closest("[data-album], [data-missing]")) return;
+  if (staticData && e.target.closest("[data-missing]")) return;
   const albumBtn = e.target.closest("[data-album]");
   if (albumBtn) {
     openAlbumForm(currentSeries.albums.find((a) => a.id === +albumBtn.dataset.album));
@@ -507,6 +544,25 @@ app.addEventListener("click", async (e) => {
   if (action === "new-series") openSeriesForm();
   else if (action === "edit-series") openSeriesForm(currentSeries);
   else if (action === "new-album") openAlbumForm();
+  else if (action === "enrich") {
+    const btn = e.target.closest("[data-action]");
+    btn.classList.add("busy");
+    btn.disabled = true;
+    btn.textContent = "Recherche en cours…";
+    try {
+      const r = await api(`/series/${currentSeries.id}/enrich`, { method: "POST" });
+      const parts = [`${plural(r.covers, "couverture")} importée${r.covers > 1 ? "s" : ""}`,
+                     `${plural(r.infos, "album")} complété${r.infos > 1 ? "s" : ""}`];
+      if (r.missing_covers) parts.push(`${r.missing_covers} toujours sans couverture`);
+      toast(parts.join(" · "));
+      route();
+    } catch (err) {
+      toast(err.message);
+      btn.classList.remove("busy");
+      btn.disabled = false;
+      btn.textContent = "Compléter depuis internet";
+    }
+  }
   else if (action === "add-missing") {
     const n = currentSeries.missing_tomes.length;
     if (!confirm(`Ajouter ${plural(n, "tome")} manquant${n > 1 ? "s" : ""} à votre liste « à acheter » ?\n`
