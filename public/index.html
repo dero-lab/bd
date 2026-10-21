@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#b5532f">
+  <title>Ma Bédéthèque</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📚</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a href="#/" class="brand">
+        <span class="brand-mark" aria-hidden="true">B</span>
+        <span>Ma Bédéthèque</span>
+      </a>
+      <nav class="main-nav" aria-label="Navigation principale">
+        <a href="#/" data-nav="home">Accueil</a>
+        <a href="#/series" data-nav="series">Séries</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="app" class="wrap" tabindex="-1" aria-live="polite"></main>
+
+  <footer class="site-footer">
+    <div class="wrap">Fait avec ♥ pour les amoureux du 9<sup>e</sup> art</div>
+  </footer>
+
+  <!-- Formulaire série -->
+  <dialog id="series-dialog" class="modal">
+    <form method="dialog" id="series-form">
+      <h2 class="modal-title">Nouvelle série</h2>
+      <label>Titre *<input name="title" required maxlength="200"></label>
+      <div class="row">
+        <label>Auteur(s)<input name="author" maxlength="200"></label>
+        <label>Éditeur<input name="publisher" maxlength="200"></label>
+      </div>
+      <div class="row">
+        <label>Genre<input name="genre" maxlength="100" list="genres"></label>
+        <label>Statut
+          <select name="status">
+            <option value="en cours">En cours</option>
+            <option value="terminée">Terminée</option>
+            <option value="abandonnée">Abandonnée</option>
+          </select>
+        </label>
+        <label class="narrow-wide">Tomes parus<input name="total_tomes" type="number" min="1" max="999" inputmode="numeric" placeholder="ex. 12"></label>
+      </div>
+      <label class="check"><input type="checkbox" name="track_missing" checked> Suivre les tomes manquants</label>
+      <label>Résumé<textarea name="description" rows="3"></textarea></label>
+      <p class="form-error" hidden></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
+        <button type="submit" class="btn btn-primary">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Formulaire album -->
+  <dialog id="album-dialog" class="modal">
+    <form method="dialog" id="album-form">
+      <h2 class="modal-title">Nouvel album</h2>
+      <div class="album-form-grid">
+        <div class="cover-picker">
+          <div class="cover-preview" id="cover-preview"></div>
+          <label class="btn btn-ghost btn-small file-btn">
+            Choisir une image
+            <input type="file" accept="image/*" id="cover-file" hidden>
+          </label>
+          <button type="button" class="btn btn-ghost btn-small" id="cover-isbn">Via l'ISBN</button>
+          <button type="button" class="btn btn-link btn-small" id="cover-clear">Retirer</button>
+        </div>
+        <div class="album-fields">
+          <div class="row row-tight">
+            <label class="narrow">Tome<input name="tome" type="number" min="0" inputmode="numeric"></label>
+            <label>Titre *<input name="title" required maxlength="200"></label>
+          </div>
+          <div class="row">
+            <label>Année<input name="year" type="number" min="1800" max="2100" inputmode="numeric"></label>
+            <label>ISBN<input name="isbn" maxlength="20" inputmode="numeric"></label>
+          </div>
+          <label>URL de couverture<input name="cover" type="url" placeholder="https://…"></label>
+          <div class="checks">
+            <label class="check"><input type="checkbox" name="owned" checked> Possédé</label>
+            <label class="check"><input type="checkbox" name="is_read"> Lu</label>
+          </div>
+          <label>Notes<textarea name="notes" rows="2"></textarea></label>
+        </div>
+      </div>
+      <p class="form-error" hidden></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-danger-ghost" id="album-delete" hidden>Supprimer</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
+        <button type="submit" class="btn btn-primary">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <datalist id="genres">
+    <option value="Aventure"><option value="Humour"><option value="Polar">
+    <option value="Science-fiction"><option value="Fantasy"><option value="Historique">
+    <option value="Western"><option value="Jeunesse"><option value="Manga"><option value="Roman graphique">
+  </datalist>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
