@@ -63,6 +63,55 @@ function toast(message) {
   toastTimer = setTimeout(() => { el.hidden = true; }, 2600);
 }
 
+// --- Réglages d'affichage ---------------------------------------------------
+// Préférences propres à chaque navigateur (localStorage) : elles marchent aussi sur la vitrine.
+
+const PREFS_KEY = "bedetheque.prefs";
+const PREF_OPTIONS = [
+  { key: "theme", title: "Thème", hint: "« Automatique » suit le réglage clair ou sombre de l'appareil.",
+    choices: [["auto", "Automatique"], ["light", "Clair"], ["dark", "Sombre"]] },
+  { key: "accent", title: "Couleur principale", hint: "Couleur des boutons, des liens et du bandeau d'accueil.",
+    choices: [["terracotta", "Terracotta", "#b5532f"], ["ocean", "Océan", "#2f6f8f"],
+              ["forest", "Forêt", "#4f7a3a"], ["plum", "Prune", "#8a4f6d"]] },
+  { key: "layout", title: "Présentation des albums", hint: "Sur l'accueil et dans les pages séries.",
+    choices: [["grid", "Grille"], ["covers", "Couvertures seules"], ["list", "Liste"]] },
+  { key: "size", title: "Taille des couvertures", hint: "Pour les présentations en grille.",
+    choices: [["small", "Petite"], ["medium", "Moyenne"], ["large", "Grande"]] },
+  { key: "sort", title: "Ordre des séries", hint: "Dans la page « Séries ».",
+    choices: [["title", "Titre (A → Z)"], ["recent", "Dernières créées"],
+              ["progress", "Progression de lecture"], ["missing", "Tomes manquants"]] },
+  { key: "gaps", title: "Tomes manquants", hint: "Emplacements vides dans la grille d'une série (le filtre « À compléter » les montre toujours).",
+    choices: [["show", "Afficher"], ["hide", "Masquer"]] },
+  { key: "motion", title: "Animations", hint: "Survol des couvertures, transitions.",
+    choices: [["on", "Activées"], ["off", "Désactivées"]] },
+];
+// Réglages repris en attributs de <html> pour le CSS
+const CSS_PREFS = ["theme", "accent", "layout", "size", "motion"];
+
+function loadPrefs() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch { /* stockage indisponible */ }
+  // Ne garde que des valeurs connues ; la première de chaque liste est la valeur par défaut.
+  return Object.fromEntries(PREF_OPTIONS.map(({ key, choices }) =>
+    [key, choices.some(([v]) => v === saved[key]) ? saved[key] : choices[0][0]]));
+}
+
+let prefs = loadPrefs();
+
+function applyPrefs() {
+  for (const key of CSS_PREFS) document.documentElement.dataset[key] = prefs[key];
+  const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+  document.querySelector('meta[name="theme-color"]').content = accent;
+}
+
+function setPref(key, value) {
+  prefs[key] = value;
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* réglage gardé pour la session */ }
+  applyPrefs();
+}
+
+applyPrefs();
+
 const STATUS_CLASS = { "en cours": "ongoing", "terminée": "done", "abandonnée": "dropped" };
 const statusChip = (s) => `<span class="chip chip-${STATUS_CLASS[s] || "ongoing"}">${esc(s || "en cours")}</span>`;
 
@@ -105,6 +154,8 @@ function albumCard(album, seriesTitle, { linkToSeries = false } = {}) {
   const attrs = linkToSeries
     ? `href="#/series/${album.series_id}"`
     : `type="button" data-album="${album.id}"`;
+  // En présentation « Liste », les pastilles de la couverture sont remplacées par ce texte
+  const state = !album.owned ? "À acheter" : album.is_read ? "Lu ✓" : "";
   return `
     <${tag} class="album-card${album.owned ? "" : " wanted"}" ${attrs}>
       ${coverHTML({ cover: album.cover, title: album.title, tome: album.tome, seriesTitle,
@@ -113,6 +164,7 @@ function albumCard(album, seriesTitle, { linkToSeries = false } = {}) {
         ${album.tome != null ? `<div class="tome">Tome ${esc(album.tome)}</div>` : ""}
         <h3>${esc(album.title)}</h3>
         <div class="sub">${esc(linkToSeries ? seriesTitle : (album.year || ""))}</div>
+        ${state ? `<span class="list-state">${state}</span>` : ""}
       </div>
     </${tag}>`;
 }
@@ -161,9 +213,19 @@ async function renderHome() {
     </section>`;
 }
 
+const readPct = (s) => (s.album_count ? (s.read_count || 0) / s.album_count : 0);
+const byTitle = (a, b) => a.title.localeCompare(b.title, "fr", { sensitivity: "base" });
+const SERIES_SORTS = {
+  title: byTitle,
+  recent: (a, b) => b.id - a.id,
+  progress: (a, b) => readPct(b) - readPct(a) || byTitle(a, b),
+  missing: (a, b) => (b.missing_count || 0) - (a.missing_count || 0) || byTitle(a, b),
+};
+
 let searchTimer;
 async function renderSeriesList(query = "") {
   const list = await api("/series" + (query ? "?q=" + encodeURIComponent(query) : ""));
+  list.sort(SERIES_SORTS[prefs.sort]);
   const searchField = document.getElementById("series-search");
   if (!searchField) {
     app.innerHTML = `
@@ -266,9 +328,10 @@ function renderAlbumGrid() {
   const grid = document.getElementById("album-grid");
   if (!grid) return;
   const s = currentSeries;
+  const showGaps = prefs.gaps === "show" || seriesFilter === "missing";
   let items = [
     ...s.albums.map((a) => ({ tome: a.tome, html: albumCard(a, s.title), owned: a.owned })),
-    ...s.missing_tomes.map((n) => ({ tome: n, html: missingSlot(n), owned: 0 })),
+    ...(showGaps ? s.missing_tomes : []).map((n) => ({ tome: n, html: missingSlot(n), owned: 0 })),
   ];
   if (seriesFilter === "owned") items = items.filter((i) => i.owned);
   if (seriesFilter === "missing") items = items.filter((i) => !i.owned);
@@ -278,17 +341,66 @@ function renderAlbumGrid() {
     : `<p class="sub">${seriesFilter === "missing" ? "Rien à compléter, la série est complète 🎉" : "Aucun album."}</p>`;
 }
 
+function renderSettings() {
+  app.innerHTML = `
+    <h1>Réglages</h1>
+    <p class="lead">Choisissez l'affichage de votre bédéthèque. Les changements s'appliquent tout de suite
+      et sont retenus par ce navigateur.</p>
+    <div class="settings">
+      <form class="settings-form" id="settings-form">
+        ${PREF_OPTIONS.map((o) => `
+          <fieldset class="setting">
+            <legend>${esc(o.title)}</legend>
+            <p class="sub">${esc(o.hint)}</p>
+            <div class="segmented">
+              ${o.choices.map(([value, label, color]) => `
+                <label><input type="radio" name="${o.key}" value="${value}"${prefs[o.key] === value ? " checked" : ""}>
+                  <span>${color ? `<i class="swatch" style="background:${color}"></i>` : ""}${esc(label)}</span></label>`).join("")}
+            </div>
+          </fieldset>`).join("")}
+        <button type="button" class="btn btn-ghost" id="settings-reset">Revenir aux réglages par défaut</button>
+      </form>
+      <aside class="settings-preview" aria-label="Aperçu">
+        <h2>Aperçu</h2>
+        <div class="grid" id="settings-preview"></div>
+      </aside>
+    </div>`;
+  renderSettingsPreview();
+}
+
+const SAMPLE_ALBUMS = [
+  { tome: 1, title: "La Cité engloutie", year: 2019, owned: 1, is_read: 1 },
+  { tome: 2, title: "Le Phare des brumes", year: 2021, owned: 1, is_read: 0 },
+  { tome: 4, title: "L'Archipel", year: 2024, owned: 0, is_read: 0 },
+];
+
+function renderSettingsPreview() {
+  const el = document.getElementById("settings-preview");
+  if (!el) return;
+  const items = SAMPLE_ALBUMS.map((a) => ({ tome: a.tome, html: albumCard(a, "Les Voyageurs") }));
+  if (prefs.gaps === "show") items.push({ tome: 3, html: missingSlot(3) });
+  items.sort((a, b) => a.tome - b.tome);
+  el.innerHTML = items.map((i) => i.html).join("");
+}
+
+app.addEventListener("change", (e) => {
+  if (!e.target.closest("#settings-form")) return;
+  setPref(e.target.name, e.target.value);
+  renderSettingsPreview();
+});
+
 // --- Routeur ----------------------------------------------------------------
 
 async function route() {
   const hash = location.hash.replace(/^#/, "") || "/";
   const seriesMatch = hash.match(/^\/series\/(\d+)$/);
-  const section = hash.startsWith("/series") ? "series" : "home";
+  const section = hash.startsWith("/series") ? "series" : hash === "/reglages" ? "settings" : "home";
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === section));
   app.innerHTML = '<div class="loading">Chargement…</div>';
   try {
     if (seriesMatch) await renderSeries(+seriesMatch[1]);
     else if (hash === "/series") await renderSeriesList();
+    else if (hash === "/reglages") renderSettings();
     else await renderHome();
   } catch (err) {
     app.innerHTML = `<div class="empty"><div class="big">😕</div><p>${esc(err.message)}</p>
@@ -568,6 +680,13 @@ document.querySelectorAll("dialog").forEach((d) => d.addEventListener("click", (
 }));
 
 app.addEventListener("click", async (e) => {
+  if (e.target.closest(".settings-preview")) return; // albums fictifs
+  if (e.target.closest("#settings-reset")) {
+    PREF_OPTIONS.forEach(({ key, choices }) => setPref(key, choices[0][0]));
+    renderSettings();
+    toast("Réglages par défaut rétablis");
+    return;
+  }
   if (staticData && e.target.closest("[data-missing]")) return;
   const albumBtn = e.target.closest("[data-album]");
   if (albumBtn) {

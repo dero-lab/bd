@@ -17,6 +17,9 @@ python3 server.py --port 8080 --host 0.0.0.0   # accessible depuis le téléphon
 - **Accueil** : statistiques (séries, albums, albums lus) et derniers albums ajoutés.
 - **Séries** : liste avec recherche (titre, auteur, genre), progression de lecture, création.
 - **Page série** : tous les albums avec leur couverture ; ajout, modification et suppression.
+- **Réglages** (`#/reglages`) : thème clair/sombre, couleur principale, présentation des albums
+  (grille, couvertures seules, liste), taille des couvertures, ordre des séries, tomes manquants
+  affichés ou non, animations. Les choix sont retenus par le navigateur (aussi sur la vitrine).
 - **Couvertures** : envoi d'une image (redimensionnée dans le navigateur), URL d'image,
   ou recherche automatique via l'ISBN. Dans tous les cas l'image est **enregistrée dans
   `data/covers/`** (une URL est téléchargée à l'enregistrement de l'album) : le site affiche
