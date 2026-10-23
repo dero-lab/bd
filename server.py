@@ -12,12 +12,14 @@ import json
 import mimetypes
 import re
 import sqlite3
+import time
 import uuid
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 
+import editeurs
 import enrich
 
 ROOT = Path(__file__).resolve().parent
@@ -39,6 +41,9 @@ CREATE TABLE IF NOT EXISTS series (
     description TEXT DEFAULT '',
     total_tomes INTEGER,
     track_missing INTEGER DEFAULT 1,
+    next_release_date  TEXT DEFAULT '',
+    next_release_title TEXT DEFAULT '',
+    releases_checked_at TEXT,
     created_at  TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS albums (
@@ -59,11 +64,30 @@ CREATE TABLE IF NOT EXISTS albums (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_albums_series ON albums(series_id);
+-- Tomes parus après le dernier tome connu, repérés à la BnF (enrich.check_releases)
+CREATE TABLE IF NOT EXISTS releases (
+    series_id  INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+    tome       INTEGER NOT NULL,
+    title      TEXT DEFAULT '',
+    isbn       TEXT DEFAULT '',
+    publisher  TEXT DEFAULT '',
+    year       INTEGER,
+    release_date TEXT,                -- date de sortie annoncée par l'éditeur (editeurs.py)
+    source     TEXT DEFAULT 'BnF',
+    url        TEXT DEFAULT '',
+    cover      TEXT DEFAULT '',
+    found_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (series_id, tome)
+);
 """
 
 # Colonnes ajoutées après la première version : ajoutées aux bases existantes au démarrage.
 MIGRATIONS = {
-    "series": {"total_tomes": "INTEGER", "track_missing": "INTEGER DEFAULT 1"},
+    "series": {"total_tomes": "INTEGER", "track_missing": "INTEGER DEFAULT 1",
+               "next_release_date": "TEXT DEFAULT ''", "next_release_title": "TEXT DEFAULT ''",
+               "releases_checked_at": "TEXT"},
+    "releases": {"release_date": "TEXT", "source": "TEXT DEFAULT 'BnF'", "url": "TEXT DEFAULT ''",
+                 "cover": "TEXT DEFAULT ''"},
     "albums": {"owned": "INTEGER DEFAULT 1", "authors": "TEXT DEFAULT ''", "publisher": "TEXT DEFAULT ''",
                "pages": "INTEGER", "source_url": "TEXT DEFAULT ''"},
 }
@@ -137,6 +161,9 @@ def clean_series(payload):
     total = to_int(payload.get("total_tomes"))
     data["total_tomes"] = total if total and 0 < total <= 999 else None
     data["track_missing"] = 0 if payload.get("track_missing") in (False, 0, "0") else 1
+    date = str(payload.get("next_release_date") or "").strip()
+    data["next_release_date"] = date if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) else ""
+    data["next_release_title"] = str(payload.get("next_release_title") or "").strip()[:200]
     return data
 
 
@@ -239,7 +266,27 @@ def api_stats(conn, _q, _b):
         "SELECT a.*, s.title AS series_title FROM albums a JOIN series s ON s.id = a.series_id "
         "WHERE a.owned = 1 ORDER BY a.created_at DESC, a.id DESC LIMIT 8"
     ))
-    return {**dict(stats), "missing": stats["wanted"] + gaps, "recent": recent}
+    # Sorties : tomes repérés après le dernier tome connu (un album ajouté depuis les masque).
+    # Ceux qui ont une date de sortie récente ou à venir (éditeurs), et les prochains tomes saisis
+    # dans la série, sont « à paraître » ; ils restent affichés 30 jours après la date.
+    found = rows(conn.execute(
+        "SELECT r.*, s.title AS series_title FROM releases r JOIN series s ON s.id = r.series_id "
+        "WHERE s.status = 'en cours' "
+        "AND r.tome > COALESCE((SELECT MAX(tome) FROM albums WHERE series_id = r.series_id), 0) "
+        "ORDER BY r.year IS NULL, r.year DESC, s.title COLLATE NOCASE, r.tome"
+    ))
+    (cutoff,) = conn.execute("SELECT date('now', '-30 days')").fetchone()
+    releases = [r for r in found if not r["release_date"] or r["release_date"] < cutoff]
+    announced = [{**r, "date": r["release_date"]} for r in found if r["release_date"] and r["release_date"] >= cutoff]
+    announced += rows(conn.execute(
+        "SELECT id AS series_id, title AS series_title, next_release_date AS date, next_release_title AS title "
+        "FROM series s WHERE next_release_date >= ? AND NOT EXISTS (SELECT 1 FROM releases "
+        "WHERE series_id = s.id AND release_date = s.next_release_date)", (cutoff,)
+    ))
+    announced.sort(key=lambda r: r["date"])
+    (checked_at,) = conn.execute("SELECT MAX(releases_checked_at) FROM series").fetchone()
+    return {**dict(stats), "missing": stats["wanted"] + gaps, "recent": recent,
+            "releases": releases, "announced": announced, "releases_checked_at": checked_at}
 
 
 def api_series_list(conn, query, _b):
@@ -283,8 +330,9 @@ def api_series_get(conn, _q, _b, sid):
 def api_series_create(conn, _q, body):
     d = clean_series(body)
     sid = conn.execute(
-        "INSERT INTO series (title, author, publisher, genre, status, description, total_tomes, track_missing) "
-        "VALUES (:title, :author, :publisher, :genre, :status, :description, :total_tomes, :track_missing)", d
+        "INSERT INTO series (title, author, publisher, genre, status, description, total_tomes, track_missing, "
+        "next_release_date, next_release_title) VALUES (:title, :author, :publisher, :genre, :status, "
+        ":description, :total_tomes, :track_missing, :next_release_date, :next_release_title)", d
     ).lastrowid
     return get_series(conn, sid)
 
@@ -295,7 +343,8 @@ def api_series_update(conn, _q, body, sid):
     conn.execute(
         "UPDATE series SET title=:title, author=:author, publisher=:publisher, genre=:genre, "
         "status=:status, description=:description, total_tomes=:total_tomes, "
-        "track_missing=:track_missing WHERE id=:id", {**d, "id": sid}
+        "track_missing=:track_missing, next_release_date=:next_release_date, "
+        "next_release_title=:next_release_title WHERE id=:id", {**d, "id": sid}
     )
     return get_series(conn, sid)
 
@@ -340,9 +389,32 @@ def api_series_add_missing(conn, _q, _b, sid):
 
 
 def api_series_enrich(conn, _q, _b, sid):
-    """Importe les couvertures manquantes et complète les champs vides de la série."""
+    """Importe les couvertures manquantes, complète les champs vides de la série et cherche
+    les tomes parus après le dernier tome connu."""
     get_series(conn, sid)
-    return enrich.enrich_series(conn, sid, COVERS)
+    result = enrich.enrich_series(conn, sid, COVERS)
+    result["releases"] = len(enrich.check_releases(conn, sid))
+    return result
+
+
+def api_releases_check(conn, query, _b):
+    """Vérifie les sorties de quelques séries, les moins récemment vérifiées d'abord.
+    Peu à la fois : la BnF bloque les rafales et une requête HTTP ne peut pas attendre."""
+    publishers = {"announced": 0, "failed": []}
+    if time.time() - _publishers_checked_at[0] > PUBLISHERS_RECHECK_SECONDS:
+        publishers = editeurs.check_publishers(conn)  # quelques pages pour tout le programme
+        _publishers_checked_at[0] = time.time()
+    limit = min(to_int((query.get("limit") or [""])[0]) or 5, 10)
+    todo = enrich.releases_todo(conn, only_stale=True)
+    found = sum(len(enrich.check_releases(conn, sid)) for sid, _title in todo[:limit])
+    return {"checked": min(limit, len(todo)), "found": found, "remaining": max(len(todo) - limit, 0),
+            **publishers}
+
+
+# Les pages « à paraître » des éditeurs ne sont relues qu'une fois par heure : le bouton
+# « Vérifier les sorties » peut être recliqué pour avancer dans la vérification BnF.
+PUBLISHERS_RECHECK_SECONDS = 3600
+_publishers_checked_at = [0.0]
 
 
 def api_lookup(_conn, query, _b):
@@ -406,6 +478,7 @@ ROUTES = [
     ("POST", r"/api/series/(\d+)/albums", api_album_create),
     ("POST", r"/api/series/(\d+)/missing", api_series_add_missing),
     ("POST", r"/api/series/(\d+)/enrich", api_series_enrich),
+    ("POST", r"/api/releases/check", api_releases_check),
     ("GET", r"/api/lookup", api_lookup),
     ("GET", r"/api/find-isbn", api_find_isbn),
     ("PUT", r"/api/albums/(\d+)", api_album_update),

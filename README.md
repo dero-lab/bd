@@ -15,6 +15,12 @@ python3 server.py --port 8080 --host 0.0.0.0   # accessible depuis le téléphon
 ## Fonctionnalités
 
 - **Accueil** : statistiques (séries, albums, albums lus) et derniers albums ajoutés.
+- **Sorties** (accueil) : albums à paraître de vos séries « en cours », lus sur les pages « à paraître »
+  des éditeurs (Soleil, Delcourt, Dargaud, Glénat, Dupuis) ou saisis dans la série, et tomes déjà
+  parus après votre dernier tome, repérés dans le catalogue de la BnF. La liste des sites utilisés
+  est dans les Réglages (« Sources et liens »).
+  Le bouton « Vérifier les sorties » vérifie 5 séries à la fois (les moins récemment vérifiées) ;
+  pour toute la collection : `python3 enrich.py --all --releases` (long : la BnF limite les requêtes).
 - **Séries** : liste avec recherche (titre, auteur, genre), progression de lecture, création.
 - **Page série** : tous les albums avec leur couverture ; ajout, modification et suppression.
 - **Réglages** (`#/reglages`) : thème clair/sombre, couleur principale, présentation des albums

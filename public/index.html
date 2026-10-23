@@ -56,6 +56,10 @@
         <label class="narrow-wide">Tomes parus<input name="total_tomes" type="number" min="1" max="999" inputmode="numeric" placeholder="ex. 12"></label>
       </div>
       <label class="check"><input type="checkbox" name="track_missing" checked> Suivre les tomes manquants</label>
+      <div class="row">
+        <label class="date-field">Prochaine sortie<input name="next_release_date" type="date"></label>
+        <label>Album annoncé<input name="next_release_title" maxlength="200" placeholder="ex. Tome 12 : Le Retour"></label>
+      </div>
       <label>Résumé<textarea name="description" rows="3"></textarea></label>
       <p class="form-error" hidden></p>
       <div class="modal-actions">

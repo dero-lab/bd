@@ -191,6 +191,65 @@ label.check input { width: 20px; height: 20px; accent-color: var(--olive); }
 .stat:nth-child(3) strong { color: var(--olive); }
 .stat:nth-child(4) strong { color: var(--ink-soft); }
 
+/* Sorties */
+.releases {
+  margin-bottom: 36px; padding: clamp(16px, 3vw, 24px);
+  background: var(--card); border: 2px solid var(--line); border-radius: 22px; box-shadow: var(--shadow);
+}
+.releases-sub {
+  font: 700 .8rem var(--sans); text-transform: uppercase; letter-spacing: .08em;
+  color: var(--ink-soft); margin: 18px 0 8px;
+}
+.releases .section-head + .releases-sub { margin-top: 0; }
+.release-list { display: grid; gap: 8px; }
+.release-list .release-more { display: none; }
+.release-list.show-all .release-more { display: flex; }
+.release {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+  border: 2px solid var(--line); border-radius: var(--radius); background: var(--paper);
+  color: var(--ink); text-decoration: none;
+}
+a.release:hover, .release a.release-text:hover .release-title { color: var(--accent); }
+.release-text { flex: 1; min-width: 0; display: flex; flex-direction: column; color: inherit; text-decoration: none; }
+.release-series { font-size: .8rem; font-weight: 700; color: var(--accent); }
+.release-title { font: 700 1rem/1.25 var(--serif); }
+.release .sub { color: var(--ink-soft); font-size: .82rem; }
+.release .chip { margin: 0; flex: none; }
+.release .btn { flex: none; }
+.release-date {
+  flex: 0 0 64px; display: flex; flex-direction: column; align-items: center; line-height: 1.1;
+  padding: 6px 4px; border-radius: 10px; background: var(--accent); color: #fff8ee;
+  font-size: .72rem; font-weight: 700; text-transform: uppercase;
+}
+.release-date strong { font: 700 1.5rem/1 var(--serif); }
+.release-date.out { background: var(--olive); }
+.chip-new { background: rgba(181, 83, 47, .14); color: var(--accent); }
+.releases-note { margin: 14px 0 0; font-size: .82rem; color: var(--ink-soft); }
+.release-source { flex: none; font-size: .82rem; font-weight: 700; text-decoration: none; }
+.release-source:hover { text-decoration: underline; }
+
+/* Réglages : sources et liens */
+.sources {
+  margin-top: 28px; padding: clamp(16px, 3vw, 24px);
+  background: var(--card); border: 2px solid var(--line); border-radius: var(--radius);
+}
+.sources > .sub { color: var(--ink-soft); max-width: 70ch; margin: 0 0 6px; }
+.source-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.source-list li {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+  padding: 8px 12px; border: 2px solid var(--line); border-radius: 10px; background: var(--paper);
+}
+.source-list a { font-weight: 700; text-decoration: none; }
+.source-list a:hover { text-decoration: underline; }
+.source-list .chip { margin: 0; }
+.source-list .sub { color: var(--ink-soft); font-size: .88rem; }
+.source-url { flex-basis: 100%; font-size: .78rem; color: var(--ink-soft); word-break: break-all; }
+.date-field { flex: 0 0 180px; }
+@media (max-width: 560px) {
+  .release { flex-wrap: wrap; }
+  .release-text { flex-basis: calc(100% - 80px); }
+}
+
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
 .section-head h2 { margin: 0; }
 

@@ -8,6 +8,7 @@ et seuls les champs vides sont remplis : rien de ce que vous avez saisi n'est é
 
     python3 enrich.py --series "Trolls de Troy"   # une série
     python3 enrich.py --all                      # toute la collection
+    python3 enrich.py --all --releases           # tomes parus après le dernier tome connu
 """
 import collections
 import json
@@ -259,6 +260,53 @@ def series_context(albums, series_publisher=""):
     return {"publishers": publishers, "ref_year": years[len(years) // 2] if years else None}
 
 
+# --- Sorties : tomes parus après le dernier tome connu ----------------------
+
+RELEASES_AHEAD = 3          # tomes cherchés au-delà du dernier connu, à chaque vérification
+RELEASES_RECHECK_DAYS = 7   # une série vérifiée depuis moins longtemps n'est pas revérifiée
+
+
+def releases_todo(conn, only_stale=False):
+    """Séries en cours ayant au moins un tome numéroté, les moins récemment vérifiées d'abord."""
+    sql = ("SELECT id, title FROM series s WHERE status = 'en cours' "
+           "AND EXISTS (SELECT 1 FROM albums WHERE series_id = s.id AND tome > 0) ")
+    if only_stale:
+        sql += ("AND (releases_checked_at IS NULL "
+                f"OR releases_checked_at < datetime('now', '-{RELEASES_RECHECK_DAYS} days')) ")
+    return conn.execute(sql + "ORDER BY releases_checked_at IS NOT NULL, releases_checked_at, "
+                              "title COLLATE NOCASE").fetchall()
+
+
+def check_releases(conn, series_id):
+    """Cherche à la BnF les tomes parus après le dernier tome connu et les enregistre dans
+    `releases`. Comme pour l'ISBN automatique, seul l'éditeur de la série est retenu.
+
+    La recherche reprend après le dernier tome déjà repéré : une série très incomplète
+    rattrape ainsi sa dernière sortie au fil des vérifications, et une série à jour ne
+    coûte qu'une requête."""
+    series = conn.execute("SELECT title, publisher FROM series WHERE id = ?", (series_id,)).fetchone()
+    albums = [dict(r) for r in conn.execute("SELECT * FROM albums WHERE series_id = ?", (series_id,))]
+    last = max([a["tome"] for a in albums if a["tome"]], default=0)
+    conn.execute("DELETE FROM releases WHERE series_id = ? AND tome <= ?", (series_id, last))
+    (start,) = conn.execute("SELECT MAX(tome) FROM releases WHERE series_id = ?", (series_id,)).fetchone()
+    start = max(start or 0, last) + 1
+    found = []
+    if last:
+        context = series_context(albums, series["publisher"])
+        for tome in range(start, start + RELEASES_AHEAD):
+            best = next((c for c in find_isbn_candidates(series["title"], tome, **context)
+                         if c["same_publisher"]), None)
+            if not best:
+                break
+            found.append({**best, "tome": tome})
+            # Une annonce d'éditeur (avec sa date de sortie) est gardée telle quelle
+            conn.execute("INSERT OR IGNORE INTO releases (series_id, tome, title, isbn, publisher, year) "
+                         "VALUES (?, ?, ?, ?, ?, ?)",
+                         (series_id, tome, best["title"], best["isbn"], best["publisher"], best["year"]))
+    conn.execute("UPDATE series SET releases_checked_at = datetime('now') WHERE id = ?", (series_id,))
+    return found
+
+
 # --- Open Library -----------------------------------------------------------
 
 def openlibrary_lookup(isbn):
@@ -460,20 +508,36 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--series", help="titre de la série (ou une partie du titre)")
     group.add_argument("--all", action="store_true", help="toutes les séries")
+    parser.add_argument("--releases", action="store_true",
+                        help="cherche les tomes parus après le dernier tome connu, au lieu de compléter les albums")
     args = parser.parse_args()
 
     global PATIENT
     PATIENT = True
     init_db()
     with db() as conn:
-        if args.all:
+        if args.all and args.releases:
+            targets = releases_todo(conn)
+        elif args.all:
             targets = conn.execute("SELECT id, title FROM series ORDER BY title").fetchall()
         else:
             targets = conn.execute("SELECT id, title FROM series WHERE title LIKE ? ORDER BY title",
                                    (f"%{args.series}%",)).fetchall()
         if not targets:
             parser.error(f"aucune série ne correspond à « {args.series} »")
+    if args.releases:
+        import editeurs
+        with db() as conn:
+            r = editeurs.check_publishers(conn)
+        print(f"Éditeurs : {r['announced']} album(s) à paraître pour vos séries"
+              + (f" ; sans réponse : {', '.join(r['failed'])}" if r["failed"] else ""))
     for sid, title in targets:
+        if args.releases:
+            with db() as conn:
+                found = check_releases(conn, sid)
+            print(f"{title} : " + (", ".join(f"tome {r['tome']} paru ({r['year'] or '?'})" for r in found)
+                                   or "rien de nouveau"))
+            continue
         with db() as conn:  # une transaction par série : le travail est conservé au fil de l'eau
             r = enrich_series(conn, sid, COVERS)
         print(f"{title} : {r['covers']} couverture(s) importée(s), {r['infos']} album(s) complété(s)"

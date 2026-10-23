@@ -14,6 +14,8 @@ HTML/CSS/JS vanilla. Node n'est pas installé sur la machine.
 python3 server.py [--port 8000] [--host 0.0.0.0] [--demo]   # site local + API
 python3 import_csv.py ma-bedetheque.csv                       # import CSV « ; » (idempotent)
 python3 enrich.py --series "Trolls de Troy" | --all           # couvertures/infos depuis internet
+python3 enrich.py --all --releases                            # sorties : éditeurs puis BnF
+python3 editeurs.py                                           # aperçu des pages « à paraître » lues
 python3 export_static.py                                      # public/collection.json pour la vitrine
 ```
 
@@ -64,6 +66,14 @@ Conséquences :
   les couvertures. Un import complet prend donc du temps. Le serveur n'est pas patient, car une
   requête HTTP ne peut pas attendre aussi longtemps.
 
+**Annonces des éditeurs (`editeurs.py`)** : lit les pages « à paraître » de Soleil, Delcourt,
+Dargaud, Glénat (France) et Dupuis (Belgique), une fonction d'analyse par famille de sites dans
+`SOURCES`. Seules ces pages, autorisées par les robots.txt, sont lues : les recherches des libraires
+(Place des Libraires, Bedetheque, Decitre…) sont interdites aux robots ou bloquées. Les pages sont
+relues au plus une fois par heure par le serveur (`PUBLISHERS_RECHECK_SECONDS`). Chez Dupuis, l'ISBN
+du JSON-LD change à chaque visite : on prend celui de l'adresse de la couverture. La liste des
+sites utilisés est aussi affichée dans les Réglages (`SOURCE_GROUPS`, app.js) : la tenir à jour.
+
 ## Règles métier à préserver
 
 - **Couvertures toujours locales.** `localize_cover()` (server.py) télécharge dans `data/covers/`
@@ -81,6 +91,14 @@ Conséquences :
   `owned = 0` forment la liste « à acheter ».
 - **Suppression d'une série** : seulement si elle n'a plus aucun album (y compris « à acheter »).
   Le serveur répond 409 sinon, et le bouton n'apparaît que sur une série vide.
+- **Sorties** : la table `releases` reçoit les annonces des éditeurs (avec `release_date`, `source`,
+  `url`, `cover`, prioritaires) et les tomes trouvés par `check_releases()` (enrich.py) à la BnF
+  après le dernier tome connu, chez un éditeur de la série (`INSERT OR IGNORE` : une annonce
+  d'éditeur n'est pas écrasée). Une sortie datée de moins de 30 jours ou à venir est « à paraître ». La recherche reprend après le
+  dernier tome déjà repéré (`RELEASES_AHEAD` tomes par vérification). Un album ajouté masque les
+  sorties de numéro inférieur ou égal. Seules les séries « en cours » sont suivies. La prochaine
+  sortie annoncée (`next_release_date`, `next_release_title`) est saisie à la main dans la série.
+  Tout passe par `/api/stats`, donc par l'export de la vitrine.
 - **`import_csv.py`** : relançable sans doublon (même ISBN, ou même série + tome + titre). Un
   `Statut` autre que « Possédé » donne `owned = 0`.
 

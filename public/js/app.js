@@ -178,10 +178,81 @@ const missingSlot = (n) => `
 
 const plural = (n, word) => `${n} ${word}${n > 1 ? "s" : ""}`;
 
+// Dates « AAAA-MM-JJ » lues en heure locale (sinon minuit UTC peut tomber la veille)
+const parseDay = (d) => new Date(d + "T00:00");
+const today = () => new Date(new Date().toDateString());
+
+// --- Sorties (accueil) ------------------------------------------------------
+
+const RELEASES_SHOWN = 6; // au-delà, repliées derrière « Tout voir »
+
+function releasesSection(s) {
+  const announced = s.announced || [];
+  const releases = s.releases || [];
+  const recentYear = new Date().getFullYear() - 1;
+  // Lien vers la fiche de l'album chez l'éditeur (annonces) et bouton « à acheter »
+  const sourceLink = (r) => r.url
+    ? `<a class="release-source" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.source || "Source")} ↗</a>` : "";
+  const wantBtn = (r) => r.tome ? `<button class="btn btn-ghost btn-small" data-action="want-release"
+      data-series="${r.series_id}" data-tome="${r.tome}" title="Ajouter ce tome à la liste « à acheter »">+ À acheter</button>` : "";
+  const announcedHTML = announced.map((r) => {
+    const d = parseDay(r.date);
+    const out = d < today();
+    return `
+      <div class="release release-announced">
+        <span class="release-date${out ? " out" : ""}">
+          <strong>${d.getDate()}</strong>${d.toLocaleDateString("fr-FR", { month: "short", year: "numeric" })}
+        </span>
+        <a class="release-text" href="#/series/${r.series_id}">
+          <span class="release-series">${esc(r.series_title)}${r.tome ? ` · Tome ${esc(r.tome)}` : ""}</span>
+          <span class="release-title">${esc(r.title || (r.tome ? "Tome " + r.tome : "Prochain album"))}</span>
+          <span class="sub">${out ? "Sorti" : "À paraître"} le ${d.toLocaleDateString("fr-FR", { dateStyle: "long" })}${
+            r.source ? "" : " (annonce saisie dans la série)"}</span>
+        </a>
+        ${sourceLink(r)}${wantBtn(r)}
+      </div>`;
+  }).join("");
+  const releasesHTML = releases.map((r, i) => `
+    <div class="release${i >= RELEASES_SHOWN ? " release-more" : ""}">
+      <a class="release-text" href="#/series/${r.series_id}">
+        <span class="release-series">${esc(r.series_title)} · Tome ${esc(r.tome)}</span>
+        <span class="release-title">${esc(r.title || "Tome " + r.tome)}</span>
+        <span class="sub">${esc([r.publisher, r.year].filter(Boolean).join(", "))}</span>
+      </a>
+      ${r.year >= recentYear ? '<span class="chip chip-new">Nouveauté</span>' : ""}
+      ${sourceLink(r)}${wantBtn(r)}
+    </div>`).join("");
+  const checked = s.releases_checked_at
+    ? `Dernière vérification le ${new Date(s.releases_checked_at.replace(" ", "T") + "Z").toLocaleDateString("fr-FR", { dateStyle: "long" })}.`
+    : "Les sorties n'ont pas encore été vérifiées.";
+  const note = `${checked} Seules les séries « en cours » sont suivies. Sources : pages « à paraître »
+    des éditeurs et catalogue de la BnF (voir <a href="#/reglages">Réglages</a>).`;
+  return `
+    <section class="releases" aria-labelledby="releases-title">
+      <div class="section-head">
+        <h2 id="releases-title">Sorties</h2>
+        <button class="btn btn-ghost btn-small" data-action="check-releases"
+                title="Lit les pages « à paraître » des éditeurs et cherche à la BnF les tomes parus après le dernier tome de vos séries">Vérifier les sorties</button>
+      </div>
+      ${announced.length ? `<h3 class="releases-sub">À paraître</h3><div class="release-list">${announcedHTML}</div>` : ""}
+      ${releases.length ? `
+        <h3 class="releases-sub">Déjà parus, pas encore dans votre collection</h3>
+        <div class="release-list" id="release-list">${releasesHTML}</div>
+        ${releases.length > RELEASES_SHOWN
+          ? `<button type="button" class="btn btn-link btn-small" id="releases-toggle">Tout voir (${releases.length})</button>` : ""}`
+        : ""}
+      ${announced.length || releases.length ? "" : `<p class="sub">Aucune sortie repérée pour vos séries.
+         <span class="edit-only">Indiquez une date de prochaine sortie dans une série, ou lancez une vérification.</span></p>`}
+      <p class="releases-note">${note}</p>
+    </section>`;
+}
+
 // --- Pages ------------------------------------------------------------------
 
+let homeStats = null;
+
 async function renderHome() {
-  const s = await api("/stats");
+  const s = homeStats = await api("/stats");
   app.innerHTML = `
     <section class="hero">
       <h1>Bienvenue dans votre bédéthèque</h1>
@@ -197,6 +268,8 @@ async function renderHome() {
       <div class="stat"><strong>${s.read}</strong><span>${s.read > 1 ? "lus" : "lu"}</span></div>
       <div class="stat"><strong>${s.missing}</strong><span>à compléter</span></div>
     </section>
+
+    ${s.series ? releasesSection(s) : ""}
 
     <section>
       <div class="section-head">
@@ -291,7 +364,10 @@ async function renderSeries(id) {
         <h1>${esc(s.title)}</h1>
         <p class="sub">${esc([s.author, s.publisher].filter(Boolean).join(" · "))}</p>
         <div>${s.genre ? `<span class="chip">${esc(s.genre)}</span>` : ""}${statusChip(s.status)}
-          <span class="chip">${plural(owned.length, "album")}${total} · ${read} lu${read > 1 ? "s" : ""}</span></div>
+          <span class="chip">${plural(owned.length, "album")}${total} · ${read} lu${read > 1 ? "s" : ""}</span>
+          ${s.next_release_date && parseDay(s.next_release_date) >= today() ? `<span class="chip chip-new">Prochain album le
+            ${parseDay(s.next_release_date).toLocaleDateString("fr-FR", { dateStyle: "long" })}${
+            s.next_release_title ? ` : ${esc(s.next_release_title)}` : ""}</span>` : ""}</div>
         ${s.description ? `<p class="desc">${esc(s.description)}</p>` : ""}
       </div>
       <div class="series-actions">
@@ -364,8 +440,49 @@ function renderSettings() {
         <h2>Aperçu</h2>
         <div class="grid" id="settings-preview"></div>
       </aside>
-    </div>`;
+    </div>
+    ${sourcesSection()}`;
   renderSettingsPreview();
+}
+
+// Sites interrogés par le site ou ses scripts : à tenir à jour avec enrich.py et editeurs.py.
+const SOURCE_GROUPS = [
+  { title: "Informations et couvertures des albums", links: [
+    { name: "Catalogue général de la BnF", url: "https://catalogue.bnf.fr/",
+      use: "ISBN, auteurs, éditeur, couvertures ; tomes déjà parus (API SRU)", country: "France" },
+    { name: "Open Library", url: "https://openlibrary.org/",
+      use: "informations et couvertures, en secours de la BnF", country: "International" },
+  ] },
+  { title: "Albums à paraître (pages des éditeurs)", links: [
+    { name: "Soleil", url: "https://www.editions-soleil.fr/bd/a-paraitre-bandes-dessinees", country: "France" },
+    { name: "Delcourt", url: "https://www.editions-delcourt.fr/bd/a-paraitre-bandes-dessinees", country: "France" },
+    { name: "Dargaud", url: "https://www.dargaud.com/bd-a-paraitre", country: "France" },
+    { name: "Glénat", url: "https://www.glenat.com/bd/a-paraitre/", use: "dont Vents d'Ouest", country: "France" },
+    { name: "Dupuis", url: "https://www.dupuis.com/catalogue/FR/parutions.html", country: "Belgique" },
+  ] },
+  { title: "Affichage", links: [
+    { name: "Google Fonts", url: "https://fonts.google.com/", use: "polices Fraunces et Nunito" },
+  ] },
+];
+
+function sourcesSection() {
+  return `
+    <section class="sources" aria-labelledby="sources-title">
+      <h2 id="sources-title">Sources et liens</h2>
+      <p class="sub">Sites consultés pour compléter la collection et annoncer les sorties. Les couvertures
+        récupérées sont enregistrées sur le site : il ne les recharge pas depuis ces adresses.</p>
+      ${SOURCE_GROUPS.map((g) => `
+        <h3 class="releases-sub">${esc(g.title)}</h3>
+        <ul class="source-list">
+          ${g.links.map((l) => `
+            <li>
+              <a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.name)} ↗</a>
+              ${l.country ? `<span class="chip">${esc(l.country)}</span>` : ""}
+              ${l.use ? `<span class="sub">${esc(l.use)}</span>` : ""}
+              <span class="source-url">${esc(l.url.replace(/^https:\/\//, ""))}</span>
+            </li>`).join("")}
+        </ul>`).join("")}
+    </section>`;
 }
 
 const SAMPLE_ALBUMS = [
@@ -687,6 +804,13 @@ app.addEventListener("click", async (e) => {
     toast("Réglages par défaut rétablis");
     return;
   }
+  if (e.target.closest("#releases-toggle")) {
+    const list = document.getElementById("release-list");
+    list.classList.toggle("show-all");
+    e.target.textContent = list.classList.contains("show-all")
+      ? "Réduire" : `Tout voir (${homeStats.releases.length})`;
+    return;
+  }
   if (staticData && e.target.closest("[data-missing]")) return;
   const albumBtn = e.target.closest("[data-album]");
   if (albumBtn) {
@@ -720,6 +844,7 @@ app.addEventListener("click", async (e) => {
                      ...(r.isbns ? [`${r.isbns} ISBN trouvé${r.isbns > 1 ? "s" : ""}`] : []),
                      `${plural(r.infos, "album")} complété${r.infos > 1 ? "s" : ""}`];
       if (r.missing_covers) parts.push(`${r.missing_covers} toujours sans couverture`);
+      if (r.releases) parts.push(`${plural(r.releases, "nouveau tome")} paru${r.releases > 1 ? "s" : ""} (voir l'accueil)`);
       toast(parts.join(" · "));
       route();
     } catch (err) {
@@ -727,6 +852,39 @@ app.addEventListener("click", async (e) => {
       btn.classList.remove("busy");
       btn.disabled = false;
       btn.textContent = "Compléter depuis internet";
+    }
+  }
+  else if (action === "check-releases") {
+    const btn = e.target.closest("[data-action]");
+    try {
+      const r = await withBusy(btn, "Vérification…", () => api("/releases/check", { method: "POST" }));
+      const parts = [];
+      if (r.announced) parts.push(`${plural(r.announced, "annonce")} d'éditeur${r.announced > 1 ? "s" : ""}`);
+      parts.push(!r.checked ? "BnF : toutes les séries vérifiées cette semaine"
+        : `BnF : ${plural(r.checked, "série")} vérifiée${r.checked > 1 ? "s" : ""}, `
+          + (r.found ? `${plural(r.found, "tome")} paru${r.found > 1 ? "s" : ""}` : "rien de nouveau")
+          + (r.remaining ? ` (encore ${r.remaining} : recliquez)` : ""));
+      if (r.failed?.length) parts.push(`sans réponse : ${r.failed.join(", ")}`);
+      toast(parts.join(" · "));
+      route();
+    } catch (err) {
+      toast(err.message);
+    }
+  }
+  else if (action === "want-release") {
+    const btn = e.target.closest("[data-action]");
+    const r = [...homeStats.releases, ...homeStats.announced]
+      .find((x) => x.series_id === +btn.dataset.series && x.tome === +btn.dataset.tome);
+    const body = { tome: r.tome, title: r.title || "Tome " + r.tome, isbn: r.isbn, publisher: r.publisher,
+                   year: r.year, owned: false, cover: r.cover || "" };
+    try {
+      // La couverture de l'éditeur est téléchargée par le serveur ; si elle échoue, on ajoute sans.
+      await withBusy(btn, "Ajout…", () => api(`/series/${r.series_id}/albums`, { method: "POST", body })
+        .catch(() => api(`/series/${r.series_id}/albums`, { method: "POST", body: { ...body, cover: "" } })));
+      toast(`${r.series_title}, tome ${r.tome} ajouté à la liste « à acheter »`);
+      route();
+    } catch (err) {
+      toast(err.message);
     }
   }
   else if (action === "add-missing") {
