@@ -525,9 +525,12 @@ albumForm.addEventListener("submit", async (e) => {
     authors: f.authors.value, publisher: f.publisher.value, pages: f.pages.value,
   };
   if (pendingCoverData) body.cover_data = pendingCoverData;
+  // Une couverture donnée par URL est téléchargée par le serveur : cela peut prendre un instant
+  const label = /^https?:\/\//.test(body.cover) ? "Téléchargement…" : "Enregistrement…";
   try {
-    if (editingAlbum) await api("/albums/" + editingAlbum.id, { method: "PUT", body });
-    else await api(`/series/${currentSeries.id}/albums`, { method: "POST", body });
+    await withBusy(albumForm.querySelector('button[type="submit"]'), label, () => editingAlbum
+      ? api("/albums/" + editingAlbum.id, { method: "PUT", body })
+      : api(`/series/${currentSeries.id}/albums`, { method: "POST", body }));
     albumDialog.close();
     toast(editingAlbum ? "Album mis à jour" : "Album ajouté");
     route();

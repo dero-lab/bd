@@ -18,8 +18,9 @@ python3 server.py --port 8080 --host 0.0.0.0   # accessible depuis le téléphon
 - **Séries** : liste avec recherche (titre, auteur, genre), progression de lecture, création.
 - **Page série** : tous les albums avec leur couverture ; ajout, modification et suppression.
 - **Couvertures** : envoi d'une image (redimensionnée dans le navigateur), URL d'image,
-  ou recherche automatique via l'ISBN (Open Library). Sans image, une couverture
-  illustrée est générée.
+  ou recherche automatique via l'ISBN. Dans tous les cas l'image est **enregistrée dans
+  `data/covers/`** (une URL est téléchargée à l'enregistrement de l'album) : le site affiche
+  les couvertures sans aucune requête sur internet. Sans image, une couverture illustrée est générée.
 
 ## Couvertures et informations depuis internet
 

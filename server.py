@@ -168,6 +168,18 @@ def delete_cover(path):
             target.unlink()
 
 
+def localize_cover(url, unchanged=False):
+    """Télécharge une couverture donnée par URL dans data/covers/ : le site l'affiche ensuite
+    sans requête sur internet. Une URL déjà enregistrée qui échoue ne bloque pas la sauvegarde."""
+    image = enrich.fetch_image(url)
+    if isinstance(image, tuple):
+        return enrich.save_image(COVERS, image)
+    if unchanged:
+        return "" if image == "gone" else url  # morte : oubliée ; panne passagère : conservée
+    raise ApiError(400, "Impossible de télécharger une image à cette adresse. "
+                        "Vérifiez l'URL, ou enregistrez l'image et utilisez « Choisir une image ».")
+
+
 def clean_album(payload, previous_cover=""):
     data = {k: payload.get(k) for k in ALBUM_FIELDS}
     data["title"] = str(data["title"] or "").strip()
@@ -185,7 +197,9 @@ def clean_album(payload, previous_cover=""):
     cover = str(data["cover"] or "").strip()
     if payload.get("cover_data"):
         cover = save_cover(payload["cover_data"])
-    elif cover and not (cover.startswith("/covers/") or re.match(r"^https?://", cover)):
+    elif re.match(r"^https?://", cover):
+        cover = localize_cover(cover, unchanged=(cover == previous_cover))
+    elif cover and not cover.startswith("/covers/"):
         raise ApiError(400, "L'URL de couverture doit commencer par http:// ou https://")
     if previous_cover and previous_cover != cover:
         delete_cover(previous_cover)

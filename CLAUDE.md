@@ -55,11 +55,21 @@ Conséquences :
   - Open Library en secours.
 - Le HTTPS de la BnF coupe les connexions après une rafale de requêtes. Le code se rabat alors sur
   HTTP pour l'API et retient le blocage pendant 10 minutes. Les couvertures BnF, qui exigent
-  HTTPS, sont sautées pendant ce temps, et seul Open Library est interrogé. Garder peu de requêtes
-  en parallèle (3).
+  HTTPS, sont sautées pendant ce temps, et seul Open Library est interrogé. Pour éviter le
+  blocage, toutes les requêtes vers la BnF passent une à une, espacées d'au moins
+  `BNF_MIN_INTERVAL` secondes (`_bnf_throttle`). Ne pas retirer cette limite.
+- Mesures du blocage : il se déclenche après 13 requêtes en 22 s, ou après quelques dizaines de
+  requêtes même espacées de 3 s, et dure environ 5 min. En ligne de commande, `enrich.py` passe
+  en mode `PATIENT` : il attend la levée du blocage, en vérifiant chaque minute, au lieu de sauter
+  les couvertures. Un import complet prend donc du temps. Le serveur n'est pas patient, car une
+  requête HTTP ne peut pas attendre aussi longtemps.
 
 ## Règles métier à préserver
 
+- **Couvertures toujours locales.** `localize_cover()` (server.py) télécharge dans `data/covers/`
+  toute couverture donnée par URL à l'enregistrement d'un album. Une nouvelle URL invalide est
+  refusée. Une URL déjà enregistrée qui renvoie 404 est oubliée, et une panne passagère ne bloque
+  pas la sauvegarde. L'enrichissement oublie aussi les URL mortes.
 - **Ne jamais écraser une saisie de l'utilisateur.** L'enrichissement ne remplit que les champs
   vides. Il ne remplace le titre que s'il vaut « Tome N », ou s'il est vide. Il n'importe une
   couverture que si l'album n'en a pas en local (`/covers/…`). Une URL externe est rapatriée en local.

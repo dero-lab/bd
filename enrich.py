@@ -12,6 +12,7 @@ et seuls les champs vides sont remplis : rien de ce que vous avez saisi n'est é
 import collections
 import json
 import re
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -28,8 +29,27 @@ OL_COVER = "https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false"
 GOOD_COVER_BYTES = 40_000  # en dessous, on cherche une image plus grande ailleurs
 PLACEHOLDER_TITLE = re.compile(r"^\s*(tome\s*\d+)?\s*$", re.I)
 BNF_HTTPS = "https://catalogue.bnf.fr/"
-BNF_BLOCK_SECONDS = 600
+BNF_BLOCK_SECONDS = 300  # durée mesurée d'un blocage : ~4 min 40
 _bnf_https_blocked_until = 0.0
+# La BnF bloque le HTTPS après une rafale (mesuré : 13 requêtes en 22 s suffisent ; 30 requêtes
+# espacées de 3 s passent) : ses requêtes passent donc une par une, espacées.
+BNF_MIN_INTERVAL = 3.0
+_bnf_lock = threading.Lock()
+# Mode patient (ligne de commande) : si la BnF bloque, on attend qu'elle se débloque au lieu
+# de sauter ses couvertures. Le serveur reste non patient : une page ne peut pas attendre 5 min.
+PATIENT = False
+BNF_PATIENCE_SECONDS = 15 * 60
+_bnf_wait_lock = threading.Lock()
+_bnf_last_request = 0.0
+
+
+def _bnf_throttle():
+    global _bnf_last_request
+    with _bnf_lock:
+        wait = _bnf_last_request + BNF_MIN_INTERVAL - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        _bnf_last_request = time.time()
 
 
 # --- Réseau -----------------------------------------------------------------
@@ -42,6 +62,8 @@ def http_get(url, timeout=15, retries=2):
         return _bnf_http(url, timeout)
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     for attempt in range(retries + 1):
+        if bnf:
+            _bnf_throttle()
         try:
             with urllib.request.urlopen(request, timeout=timeout) as res:
                 return res.read(), res.headers.get("Content-Type", "")
@@ -51,10 +73,28 @@ def http_get(url, timeout=15, retries=2):
         except (urllib.error.URLError, OSError):
             pass
         time.sleep(0.6 * (attempt + 1))
+    if bnf and PATIENT and _wait_for_bnf():
+        return http_get(url, timeout, retries)
     if bnf:
         _bnf_https_blocked_until = time.time() + BNF_BLOCK_SECONDS
         return _bnf_http(url, timeout)
     return None
+
+
+def _wait_for_bnf():
+    """Attend la levée du blocage HTTPS de la BnF (un seul fil vérifie, les autres attendent)."""
+    with _bnf_wait_lock:
+        probe = BNF_COVER.format(ark="ark:/12148/cb41303810c")
+        start = time.time()
+        while time.time() - start < BNF_PATIENCE_SECONDS:
+            try:
+                urllib.request.urlopen(urllib.request.Request(probe, headers={"User-Agent": USER_AGENT}),
+                                       timeout=10).read()
+                return True
+            except (urllib.error.URLError, OSError):
+                print("  BnF momentanément bloquée, nouvel essai dans 1 min…", flush=True)
+                time.sleep(60)
+        return False
 
 
 def _bnf_http(url, timeout):
@@ -64,6 +104,7 @@ def _bnf_http(url, timeout):
     if "/couverture?" in url:
         return None
     request = urllib.request.Request("http://" + url[len("https://"):], headers={"User-Agent": USER_AGENT})
+    _bnf_throttle()
     try:
         with urllib.request.urlopen(request, timeout=timeout) as res:
             return res.read(), res.headers.get("Content-Type", "")
@@ -257,6 +298,22 @@ def image_ext(data):
     return None
 
 
+def fetch_image(url, timeout=10, max_bytes=15_000_000):
+    """Télécharge l'image d'une URL donnée : (octets, extension), « gone » si l'adresse n'existe
+    pas (404/410), ou None si l'échec est peut-être passager ou si ce n'est pas une image."""
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as res:
+            data = res.read(max_bytes + 1)
+    except urllib.error.HTTPError as e:
+        return "gone" if e.code in (404, 410) else None
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    ext = image_ext(data)
+    # moins de 200 octets : image vide de remplacement (ex. pixel transparent)
+    return (data, ext) if ext and 200 <= len(data) <= max_bytes else None
+
+
 def find_cover(isbn, ark, existing_url):
     """Télécharge la meilleure couverture disponible ; renvoie (octets, extension) ou None."""
     candidates = []
@@ -337,6 +394,11 @@ def enrich_series(conn, series_id, covers_dir, workers=3):
             found_isbn = candidates[0]["isbn"] if candidates and candidates[0]["same_publisher"] else ""
         missing = needs_cover(album)
         isbn = album["isbn"] or found_isbn
+        known_ark = re.search(r"ark:/12148/cb\w+", album["source_url"] or "")
+        if known_ark and not needs_info(album):
+            # Notice déjà récupérée : seule la couverture manque, inutile d'interroger le catalogue
+            image = find_cover(isbn, known_ark.group(), album["cover"]) if missing else None
+            return album, found_isbn, {}, image
         return (album, found_isbn, *lookup(isbn, album["cover"] if missing else "", want_cover=missing))
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -351,6 +413,10 @@ def enrich_series(conn, series_id, covers_dir, workers=3):
         if needs_cover(album) and not image:
             not_found.append(album["title"])
         updates = album_updates(album, info, cover_path)
+        # URL externe morte : on l'oublie pour ne plus solliciter internet à chaque affichage
+        if (not image and (album["cover"] or "").startswith("http")
+                and fetch_image(album["cover"]) == "gone"):
+            updates["cover"] = ""
         if found_isbn:
             updates["isbn"] = found_isbn
             isbns += 1
@@ -396,6 +462,8 @@ def main():
     group.add_argument("--all", action="store_true", help="toutes les séries")
     args = parser.parse_args()
 
+    global PATIENT
+    PATIENT = True
     init_db()
     with db() as conn:
         if args.all:
