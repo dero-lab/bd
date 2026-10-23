@@ -13,6 +13,7 @@ import collections
 import json
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -128,6 +129,95 @@ def unescape(text):
             .replace("&apos;", "'").replace("&amp;", "&").strip())
 
 
+# --- Recherche d'ISBN par série + tome (BnF, notices UNIMARC) ---------------
+
+def normalize(text):
+    """« Les Tuniques bleues (Dupuis). » → « tuniques bleues » : pour comparer des titres."""
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    text = re.sub(r"\(.*?\)", " ", text)
+    words = re.sub(r"[^a-z0-9]+", " ", text).split()
+    return " ".join(w for w in words if w not in ("le", "la", "les", "l", "the"))
+
+
+def tome_number(value):
+    """« 11 », « T. 11 », « tome 11 » → 11 ; « 11-13 » (intégrale) → None."""
+    m = re.fullmatch(r"(?:t(?:ome)?\.?\s*)?0*(\d+)", unescape(value).lower().strip(" ."))
+    return int(m.group(1)) if m else None
+
+
+def unimarc_fields(record, tag):
+    return [dict((code, unescape(v)) for code, v in re.findall(r'code="(\w)">(.*?)</mxc:subfield>', f, re.S))
+            for f in re.findall(rf'<mxc:datafield tag="{tag}".*?</mxc:datafield>', record, re.S)]
+
+
+def series_match(candidate, target):
+    """0 : même série ; 1 : la série est nommée dedans (« Une aventure d'Astérix ») ; None sinon."""
+    candidate = normalize(candidate)
+    if candidate == target:
+        return 0
+    if re.search(rf"(^| ){re.escape(target)}( |$)", candidate):
+        return 1
+    return None
+
+
+def find_isbn_candidates(series_title, tome, publishers=(), ref_year=None):
+    """Éditions françaises d'un tome trouvées à la BnF, la plus probable en premier.
+
+    Classement : nom de série exact, puis éditeur déjà présent dans la série, puis année
+    la plus proche des autres albums (pour rester dans la même édition)."""
+    name = re.sub(r"\s*\(.*?\)", "", series_title or "").strip()
+    if not name or not tome:
+        return []
+    query = urllib.parse.urlencode({
+        "version": "1.2", "operation": "searchRetrieve", "recordSchema": "unimarcxchange",
+        "maximumRecords": "50", "query": f'bib.title all "{name}" and bib.title all "{tome}"',
+    })
+    res = http_get(f"{BNF_SRU}?{query}", timeout=25)
+    if not res:
+        return []
+    target = normalize(name)
+    known_pubs = {normalize(p) for p in publishers if p} - {""}
+    found = {}
+    for record in re.findall(r"<mxc:record.*?</mxc:record>", res[0].decode("utf-8", "replace"), re.S):
+        languages = {f.get("a") for f in unimarc_fields(record, "101")}
+        if languages and "fre" not in languages:
+            continue
+        scores = [series_match(f.get(code, ""), target)
+                  for tag, code in (("225", "a"), ("461", "t")) for f in unimarc_fields(record, tag)
+                  if tome_number(f.get("v", "")) == int(tome)]
+        scores = [sc for sc in scores if sc is not None]
+        isbns = [re.sub(r"[^0-9Xx]", "", f.get("a", "")) for f in unimarc_fields(record, "010")]
+        isbns = [i for i in isbns if len(i) in (10, 13)]
+        if not scores or not isbns:
+            continue
+        edition = (unimarc_fields(record, "210") + unimarc_fields(record, "214") or [{}])[0]
+        year = re.search(r"\d{4}", edition.get("d", ""))
+        publisher = edition.get("c", "")
+        pub = normalize(publisher)
+        same_publisher = not known_pubs or any(k and (k in pub or pub in k) for k in known_pubs)
+        candidate = {
+            "isbn": isbns[0],
+            "title": (unimarc_fields(record, "200") or [{}])[0].get("a", ""),
+            "publisher": publisher,
+            "year": int(year.group()) if year else None,
+            "same_publisher": same_publisher,
+            "_rank": (min(scores), not same_publisher,
+                      abs((int(year.group()) if year else 9999) - ref_year) if ref_year
+                      else (int(year.group()) if year else 9999)),
+        }
+        if isbns[0] not in found or candidate["_rank"] < found[isbns[0]]["_rank"]:
+            found[isbns[0]] = candidate
+    ranked = sorted(found.values(), key=lambda c: c["_rank"])
+    return [{k: v for k, v in c.items() if k != "_rank"} for c in ranked]
+
+
+def series_context(albums, series_publisher=""):
+    """Éditeurs et année de référence d'une série, pour classer les éditions candidates."""
+    publishers = {a["publisher"] for a in albums if a.get("publisher")} | {series_publisher}
+    years = sorted(a["year"] for a in albums if a.get("year") and a.get("owned", 1))
+    return {"publishers": publishers, "ref_year": years[len(years) // 2] if years else None}
+
+
 # --- Open Library -----------------------------------------------------------
 
 def openlibrary_lookup(isbn):
@@ -231,27 +321,42 @@ def album_updates(album, info, cover_path):
 def enrich_series(conn, series_id, covers_dir, workers=3):
     series = conn.execute("SELECT * FROM series WHERE id = ?", (series_id,)).fetchone()
     albums = [dict(r) for r in conn.execute("SELECT * FROM albums WHERE series_id = ?", (series_id,))]
-    todo = [a for a in albums if needs_info(a) or (needs_cover(a) and (a["isbn"] or a["cover"]))]
+    # ISBN recherché automatiquement seulement pour les albums « à acheter » : pour un album
+    # possédé, l'édition exacte ne peut pas être devinée (bouton du formulaire à la place).
+    needs_isbn = lambda a: not a["isbn"] and a["tome"] and not a["owned"]
+    todo = [a for a in albums
+            if needs_isbn(a) or needs_info(a) or (needs_cover(a) and (a["isbn"] or a["cover"]))]
+
+    context = series_context(albums, series["publisher"])
 
     def work(album):
+        found_isbn = ""
+        if needs_isbn(album):
+            candidates = find_isbn_candidates(series["title"], album["tome"], **context)
+            # Accepté seulement chez un éditeur déjà présent dans la série (évite les homonymes)
+            found_isbn = candidates[0]["isbn"] if candidates and candidates[0]["same_publisher"] else ""
         missing = needs_cover(album)
-        return (album, *lookup(album["isbn"], album["cover"] if missing else "", want_cover=missing))
+        isbn = album["isbn"] or found_isbn
+        return (album, found_isbn, *lookup(isbn, album["cover"] if missing else "", want_cover=missing))
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(work, todo))
 
-    covers = infos = 0
+    covers = infos = isbns = 0
     not_found = []
     creators = collections.Counter()
     publishers = collections.Counter()
-    for album, info, image in results:
+    for album, found_isbn, info, image in results:
         cover_path = save_image(covers_dir, image) if image else None
         if needs_cover(album) and not image:
             not_found.append(album["title"])
         updates = album_updates(album, info, cover_path)
+        if found_isbn:
+            updates["isbn"] = found_isbn
+            isbns += 1
         if cover_path:
             covers += 1
-        if set(updates) - {"cover"}:
+        if set(updates) - {"cover", "isbn"}:
             infos += 1
         if updates:
             sets = ", ".join(f"{k} = :{k}" for k in updates)
@@ -272,6 +377,7 @@ def enrich_series(conn, series_id, covers_dir, workers=3):
 
     return {
         "checked": len(todo),
+        "isbns": isbns,
         "covers": covers,
         "infos": infos,
         "missing_covers": sum(1 for a in albums if needs_cover(a)) - covers,
@@ -303,6 +409,7 @@ def main():
         with db() as conn:  # une transaction par série : le travail est conservé au fil de l'eau
             r = enrich_series(conn, sid, COVERS)
         print(f"{title} : {r['covers']} couverture(s) importée(s), {r['infos']} album(s) complété(s)"
+              + (f", {r['isbns']} ISBN trouvé(s)" if r["isbns"] else "")
               + (f", {r['missing_covers']} sans couverture" if r["missing_covers"] else ""))
 
 

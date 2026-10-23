@@ -386,13 +386,18 @@ function openAlbumForm(album = null, defaults = {}) {
     const tomes = currentSeries.albums.map((a) => a.tome).filter((t) => t != null);
     f.tome.value = tomes.length ? Math.max(...tomes) + 1 : 1;
   }
+  document.getElementById("isbn-options").innerHTML = "";
+  findIsbnBtn.hidden = !!album?.isbn;
   refreshPreview();
   albumDialog.showModal();
   if (!staticData) f.title.focus();
+  // Tome manquant : on cherche tout de suite son ISBN, sa couverture et ses détails
+  if (defaults.tome && !staticData) findIsbn().catch((err) => showFormError(albumForm, err.message));
 }
 
 ["input", "change"].forEach((evt) => albumForm.addEventListener(evt, (e) => {
   if (e.target.name === "cover") pendingCoverData = null;
+  if (e.target.name === "isbn") findIsbnBtn.hidden = !!e.target.value.trim();
   if (["cover", "title", "tome"].includes(e.target.name)) refreshPreview();
 }));
 
@@ -430,21 +435,65 @@ coverFile.addEventListener("change", async () => {
 
 // Recherche par ISBN : ne remplit que les champs vides, et ne télécharge la couverture
 // que s'il n'y en a pas déjà une en local.
-document.getElementById("cover-isbn").addEventListener("click", async (e) => {
+async function withBusy(btn, label, task) {
+  const original = btn.textContent;
+  btn.classList.add("busy");
+  btn.disabled = true;
+  btn.textContent = label;
+  try {
+    return await task();
+  } finally {
+    btn.classList.remove("busy");
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+const findIsbnBtn = document.getElementById("find-isbn");
+const coverIsbnBtn = document.getElementById("cover-isbn");
+
+/** Cherche les éditions du tome à la BnF ; renseigne la meilleure si l'éditeur concorde. */
+async function findIsbn() {
+  const f = albumForm.elements;
+  if (!f.tome.value) {
+    showFormError(albumForm, "Indiquez d'abord le numéro du tome.");
+    f.tome.focus();
+    return;
+  }
+  albumForm.querySelector(".form-error").hidden = true;
+  const { candidates } = await withBusy(findIsbnBtn, "Recherche…",
+    () => api(`/find-isbn?series_id=${currentSeries.id}&tome=${f.tome.value}`));
+  document.getElementById("isbn-options").innerHTML = candidates.map((c) =>
+    `<option value="${esc(c.isbn)}">${esc([c.title, c.publisher, c.year].filter(Boolean).join(" · "))}</option>`).join("");
+  if (!candidates.length) {
+    showFormError(albumForm, `Aucune édition du tome ${f.tome.value} trouvée à la BnF.`);
+    return;
+  }
+  const best = candidates[0];
+  if (!best.same_publisher) {
+    showFormError(albumForm, `${plural(candidates.length, "édition")} trouvée${candidates.length > 1 ? "s" : ""}, `
+      + "mais pas chez l'éditeur de la série : choisissez dans la liste du champ ISBN.");
+    return;
+  }
+  f.isbn.value = best.isbn;
+  await lookupIsbn();
+  if (candidates.length > 1) toast(`${candidates.length} éditions trouvées : les autres sont proposées dans le champ ISBN`);
+}
+
+findIsbnBtn.addEventListener("click", () => findIsbn().catch((err) => showFormError(albumForm, err.message)));
+coverIsbnBtn.addEventListener("click", () => lookupIsbn().catch((err) => showFormError(albumForm, err.message)));
+
+async function lookupIsbn() {
   const f = albumForm.elements;
   const isbn = f.isbn.value.replace(/[^0-9Xx]/g, "");
   if (!isbn) {
-    showFormError(albumForm, "Saisissez d'abord l'ISBN de l'album.");
+    showFormError(albumForm, "Saisissez d'abord l'ISBN de l'album, ou utilisez « Trouver l'ISBN ».");
     f.isbn.focus();
     return;
   }
   albumForm.querySelector(".form-error").hidden = true;
-  const btn = e.currentTarget;
   const hasLocalCover = !!pendingCoverData || f.cover.value.startsWith("/covers/");
-  btn.classList.add("busy");
-  btn.disabled = true;
-  btn.textContent = "Recherche…";
-  try {
+  await withBusy(coverIsbnBtn, "Recherche…", async () => {
     const info = await api(`/lookup?isbn=${isbn}&cover=${hasLocalCover ? 0 : 1}`);
     if (info.title && /^\s*(tome\s*\d+)?\s*$/i.test(f.title.value)) f.title.value = info.title;
     for (const name of ["authors", "publisher", "year", "pages"]) {
@@ -458,14 +507,8 @@ document.getElementById("cover-isbn").addEventListener("click", async (e) => {
     refreshPreview();
     toast(info.cover ? "Couverture et informations récupérées" : hasLocalCover
       ? "Informations complétées (couverture conservée)" : "Informations complétées, pas de couverture trouvée");
-  } catch (err) {
-    showFormError(albumForm, err.message);
-  } finally {
-    btn.classList.remove("busy");
-    btn.disabled = false;
-    btn.textContent = "Via l'ISBN";
-  }
-});
+  });
+}
 
 document.getElementById("cover-clear").addEventListener("click", () => {
   pendingCoverData = null;
@@ -552,6 +595,7 @@ app.addEventListener("click", async (e) => {
     try {
       const r = await api(`/series/${currentSeries.id}/enrich`, { method: "POST" });
       const parts = [`${plural(r.covers, "couverture")} importée${r.covers > 1 ? "s" : ""}`,
+                     ...(r.isbns ? [`${r.isbns} ISBN trouvé${r.isbns > 1 ? "s" : ""}`] : []),
                      `${plural(r.infos, "album")} complété${r.infos > 1 ? "s" : ""}`];
       if (r.missing_covers) parts.push(`${r.missing_covers} toujours sans couverture`);
       toast(parts.join(" · "));
@@ -569,8 +613,10 @@ app.addEventListener("click", async (e) => {
       + "Les titres seront « Tome N » : vous pourrez les modifier ensuite.")) return;
     try {
       const { added } = await api(`/series/${currentSeries.id}/missing`, { method: "POST" });
-      toast(`${plural(added, "tome")} ajouté${added > 1 ? "s" : ""} à la liste`);
-      route();
+      toast(`${plural(added, "tome")} ajouté${added > 1 ? "s" : ""} à la liste, recherche des ISBN…`);
+      await route();
+      // Enchaîne sur la recherche d'ISBN, couvertures et détails des tomes ajoutés
+      app.querySelector('[data-action="enrich"]')?.click();
     } catch (err) {
       toast(err.message);
     }

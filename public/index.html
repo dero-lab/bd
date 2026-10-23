@@ -72,6 +72,8 @@
             Choisir une image
             <input type="file" accept="image/*" id="cover-file" hidden>
           </label>
+          <button type="button" class="btn btn-ghost btn-small edit-only" id="find-isbn"
+                  title="Cherche l'ISBN de ce tome dans le catalogue de la BnF">Trouver l'ISBN</button>
           <button type="button" class="btn btn-ghost btn-small edit-only" id="cover-isbn"
                   title="Cherche la couverture et les informations manquantes (BnF, Open Library)">Via l'ISBN</button>
           <button type="button" class="btn btn-link btn-small edit-only" id="cover-clear">Retirer</button>
@@ -84,7 +86,7 @@
           </div>
           <div class="row">
             <label>Année<input name="year" type="number" min="1800" max="2100" inputmode="numeric"></label>
-            <label>ISBN<input name="isbn" maxlength="20" inputmode="numeric"></label>
+            <label>ISBN<input name="isbn" maxlength="20" inputmode="numeric" list="isbn-options" autocomplete="off"></label>
           </div>
           <label>Auteurs<input name="authors" maxlength="300" placeholder="Scénario, … ; dessin, …"></label>
           <div class="row">
@@ -109,6 +111,7 @@
     </form>
   </dialog>
 
+  <datalist id="isbn-options"></datalist>
   <datalist id="genres">
     <option value="Aventure"><option value="Humour"><option value="Polar">
     <option value="Science-fiction"><option value="Fantasy"><option value="Historique">

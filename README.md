@@ -31,6 +31,12 @@ téléchargées dans `data/covers/` : le site n'a plus besoin d'internet pour le
 - **Formulaire d'un album → « Via l'ISBN »** : traite l'album en cours de saisie.
 - **En ligne de commande** : `python3 enrich.py --series "Trolls de Troy"` ou `python3 enrich.py --all`.
 
+**Tomes manquants sans ISBN** : l'ISBN est cherché dans le catalogue de la BnF à partir du
+nom de la série et du numéro de tome (éditions françaises uniquement, en privilégiant
+l'éditeur et l'époque des albums que vous possédez). Il est renseigné automatiquement pour
+les albums « à acheter » s'il est publié chez un éditeur déjà présent dans la série ; sinon,
+le bouton « Trouver l'ISBN » du formulaire propose les éditions trouvées dans le champ ISBN.
+
 Seules les **couvertures manquantes** sont importées : un album qui a déjà une couverture
 locale n'est jamais modifié (une couverture donnée par URL est rapatriée en local). De même,
 seuls les champs vides sont remplis, et le titre n'est remplacé que s'il vaut « Tome N ».

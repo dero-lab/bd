@@ -341,6 +341,18 @@ def api_lookup(_conn, query, _b):
     return result
 
 
+def api_find_isbn(conn, query, _b):
+    """Éditions possibles d'un tome d'une série (pour le formulaire)."""
+    sid = to_int((query.get("series_id") or [""])[0])
+    tome = to_int((query.get("tome") or [""])[0])
+    if not sid or not tome:
+        raise ApiError(400, "Série et numéro de tome requis.")
+    series = get_series(conn, sid)
+    albums = rows(conn.execute("SELECT * FROM albums WHERE series_id = ?", (sid,)))
+    context = enrich.series_context(albums, series["publisher"])
+    return {"candidates": enrich.find_isbn_candidates(series["title"], tome, **context)}
+
+
 def cleanup_covers():
     """Supprime les images qui ne sont plus utilisées (ex. recherche ISBN annulée)."""
     with db() as conn:
@@ -378,6 +390,7 @@ ROUTES = [
     ("POST", r"/api/series/(\d+)/missing", api_series_add_missing),
     ("POST", r"/api/series/(\d+)/enrich", api_series_enrich),
     ("GET", r"/api/lookup", api_lookup),
+    ("GET", r"/api/find-isbn", api_find_isbn),
     ("PUT", r"/api/albums/(\d+)", api_album_update),
     ("DELETE", r"/api/albums/(\d+)", api_album_delete),
 ]
