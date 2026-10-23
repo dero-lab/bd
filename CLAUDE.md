@@ -79,6 +79,8 @@ Conséquences :
 - **Tomes manquants** : ils ne sont pas stockés. `missing_tomes()` les calcule à chaque lecture
   (de 1 à max(`total_tomes`, plus grand tome connu), désactivable par `track_missing`). Les albums
   `owned = 0` forment la liste « à acheter ».
+- **Suppression d'une série** : seulement si elle n'a plus aucun album (y compris « à acheter »).
+  Le serveur répond 409 sinon, et le bouton n'apparaît que sur une série vide.
 - **`import_csv.py`** : relançable sans doublon (même ISBN, ou même série + tome + titre). Un
   `Statut` autre que « Possédé » donne `owned = 0`.
 

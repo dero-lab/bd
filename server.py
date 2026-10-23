@@ -302,8 +302,11 @@ def api_series_update(conn, _q, body, sid):
 
 def api_series_delete(conn, _q, _b, sid):
     get_series(conn, sid)
-    for (cover,) in conn.execute("SELECT cover FROM albums WHERE series_id = ?", (sid,)).fetchall():
-        delete_cover(cover)
+    # Une série ne se supprime que vide : ses albums doivent avoir été supprimés un à un.
+    (count,) = conn.execute("SELECT COUNT(*) FROM albums WHERE series_id = ?", (sid,)).fetchone()
+    if count:
+        raise ApiError(409, f"Supprimez d'abord les {count} albums de la série." if count > 1
+                       else "Supprimez d'abord l'album de la série.")
     conn.execute("DELETE FROM series WHERE id = ?", (sid,))
     return {"ok": True}
 

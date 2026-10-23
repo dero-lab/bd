@@ -299,7 +299,7 @@ async function renderSeries(id) {
         <button class="btn btn-ghost" data-action="enrich"
                 title="Importe les couvertures manquantes et complète les informations vides à partir des ISBN">Compléter depuis internet</button>
         <button class="btn btn-ghost" data-action="edit-series">Modifier</button>
-        <button class="btn btn-danger-ghost" data-action="delete-series">Supprimer</button>
+        ${s.albums.length ? "" : '<button class="btn btn-danger-ghost" data-action="delete-series">Supprimer la série</button>'}
       </div>
     </header>
     ${gaps ? `
@@ -744,9 +744,7 @@ app.addEventListener("click", async (e) => {
     }
   }
   else if (action === "delete-series") {
-    const n = currentSeries.albums.length;
-    const msg = `Supprimer la série « ${currentSeries.title} »` + (n ? ` et ses ${plural(n, "album")} ?` : " ?");
-    if (!confirm(msg)) return;
+    if (!confirm(`Supprimer la série « ${currentSeries.title} » ?`)) return;
     try {
       await api("/series/" + currentSeries.id, { method: "DELETE" });
       toast("Série supprimée");
